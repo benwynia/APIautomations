@@ -284,3 +284,31 @@ def process_json_data(raw_data, join_data=None, column_mappings=None, concat_fie
         df = df[limit_fields]  # Example: ['user_id', 'full_name', 'user_type']
 
     return df
+
+def make_request_with_retry(url, headers, params, max_retries=10, backoff_factor=3):
+    """
+    Makes a GET request with retries and exponential backoff.
+
+    Args:
+        url (str): The URL for the API request.
+        headers (dict): Headers to be sent with the request.
+        params (dict): Parameters to be included in the request.
+        max_retries (int): Maximum number of retries.
+        backoff_factor (float): Factor by which to multiply the delay for each retry.
+
+    Returns:
+        requests.Response: The response object from the requests library.
+    """
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()  # Raises an HTTPError for bad responses
+            return response
+        except requests.RequestException as e:
+            print(f"Request failed: {e}, attempt {attempt + 1} of {max_retries}")
+            if attempt < max_retries - 1:
+                sleep_time = backoff_factor * (2 ** attempt)
+                print(f"Retrying in {sleep_time} seconds...")
+                time.sleep(sleep_time)
+            else:
+                raise

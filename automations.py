@@ -312,3 +312,115 @@ def make_request_with_retry(url, headers, params, max_retries=10, backoff_factor
                 time.sleep(sleep_time)
             else:
                 raise
+
+def generate_headers(base_url, referer, content_type='application/json', accept='/', request_verification_token=None):
+    headers = {
+        'Accept': accept,
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Content-Type': content_type,
+        'Host': base_url.replace('https://', '').split('/')[0],  # Extract host from base URL
+        'Origin': base_url,
+        'Referer': referer,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Sec-Fetch-Dest': 'empty', 
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"'
+    }
+    if request_verification_token:
+        headers['__RequestVerificationToken'] = request_verification_token
+    return headers
+
+def login(session, data, base_url):
+    """ Perform login and set up session cookies, print the login status """
+    
+    login_url = f"{base_url}/mains/login/login"
+    referer_url = f"{base_url}/"
+    headers = generate_headers(base_url, referer=referer_url, content_type='application/x-www-form-urlencoded')
+    
+    response = session.post(login_url, headers=headers, data=data)
+    
+    # Check if login was successful by looking at the HTTP status code
+    if response.status_code == 200:
+        print("Login successful!")
+    else:
+        print("Login failed! Status code:", response.status_code)
+    
+    return response
+
+def switch_client_account(session, client_account_id, base_url):
+    """ Retrieve the token and switch to a specific client account, print the switch status """
+    token_url = f"{base_url}/admins/clientQuickLogin/createReturnToken"
+    params = {'clientAccountId': client_account_id}
+    headers = generate_headers(base_url, referer=f"{base_url}/admins/client/")
+    token_response = session.get(token_url, headers=headers, params=params)
+
+    if token_response.status_code != 200:
+        print("Failed to retrieve token! Status code:", token_response.status_code)
+        return None  # Exit if token retrieval fails
+
+    token_data = token_response.json()
+    return_token = token_data['ReturnToken']
+
+    switch_account_url = f"{base_url}/admins/clientQuickLogin/switchAccount"
+    params_switch = {'clientAccountId': client_account_id, 'returnToken': return_token}
+    switch_response = session.get(switch_account_url, headers=headers, params=params_switch)
+
+    # Check if switch was successful by looking at the HTTP status code
+    if switch_response.status_code == 200:
+        print("Switched to client account successfully!")
+    else:
+        print("Failed to switch client account! Status code:", switch_response.status_code)
+
+    return switch_response
+
+def get_patients(session, login_data, base_url, client_account_id):
+    
+    # Perform login
+    login_response = login(session, login_data, base_url)
+    if login_response.status_code != 200:
+        print("Login failed:", login_response.text)
+        return None
+    
+    # Switch to the specified client account
+    switch_response = switch_client_account(session, client_account_id, base_url)
+    if switch_response.status_code != 200:
+        print("Switch account failed:", switch_response.text)
+        return None
+
+    # Retrieve the patient page to extract the verification token
+    patient_response = session.get(f"{base_url}/clients/patient", params={})
+    if patient_response.status_code != 200:
+        print("Failed to retrieve patient page:", patient_response.text)
+        return None
+
+    soup = BeautifulSoup(patient_response.text, 'html.parser')
+    token_input = soup.find('input', {'name': '__RequestVerificationToken'})
+    if not token_input:
+        print("Token not found in the patient page.")
+        return None
+
+    request_verification_token = token_input['value']
+    custom_headers = generate_headers(base_url, f"{base_url}/clients/Patient/results?", content_type='application/json', accept='/', request_verification_token=request_verification_token)
+
+    # Fetch patient list
+    patient_search_data = json.dumps({"MaxResults": 2500, "DiagnosisOperator": False})
+    response = session.post(f"{base_url}/clients/PatientSearch", headers=custom_headers, data=patient_search_data)
+
+    # Check the response and handle data
+    if response.status_code == 200:
+        data = json.loads(response.text)
+        patients_list = data['Patients']
+        df = pd.DataFrame(patients_list)
+        print("Patient list successfully retrieved.")
+        return df
+    else:
+        print("Failed to fetch patient data with status:", response.status_code, response.text)
+        return None
